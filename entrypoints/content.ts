@@ -1,4 +1,4 @@
-import { mirrorPageThemeTo, mountPaginator, installBridge } from "@/src/content";
+import { mirrorPageThemeTo, Paginator, installBridge } from "@/src/content";
 
 export default defineContentScript({
   matches: ['https://chat.openai.com/*', 'https://chatgpt.com/*'],
@@ -21,7 +21,7 @@ export default defineContentScript({
     });
     ui.mount();
     mirrorPageThemeTo(ui.shadowHost);
-    await mountPaginator(ui.shadowHost);
+    await Paginator.mount(ui.shadowHost);
     installBridge();
   }
 });

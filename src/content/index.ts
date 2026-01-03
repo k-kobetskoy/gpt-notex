@@ -1,5 +1,5 @@
 import { mirrorPageThemeTo, ensureFontsLoaded } from "./ui";
-import {mountPaginator} from './panel/panel'
+import { Paginator } from './panel/panel'
 import { installBridge } from "./bridge";
 
-export { mirrorPageThemeTo, mountPaginator, installBridge, ensureFontsLoaded };
+export { mirrorPageThemeTo, Paginator, installBridge, ensureFontsLoaded };
