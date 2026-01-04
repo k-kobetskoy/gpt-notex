@@ -3,7 +3,7 @@ import css from './panel.css?raw';
 import { ensureFontsLoaded } from '@/src/content';
 import dotsSvg from '@/public/icons/dots.svg?raw';
 import { PaginatorConfig, PaginationElement, ConversationItem, Turn, Conversation } from '@/src/content/types';
-import { buildConversationItems, delay, waitForElement } from '@/src/utils';
+import { buildConversationItems, waitForElement } from '@/src/utils';
 import { getRole, parseTurn, waitForConversationUrl } from '@/src/utils/conversation-parser';
 
 export class Paginator {
@@ -13,11 +13,14 @@ export class Paginator {
     private readonly MAX_VISIBLE = 10;
     private readonly WHEEL_STEP_PX = 48;
 
+    private activeArticleObserver?: IntersectionObserver;
+    private firstArticleMutationObserver?: MutationObserver;
+    private articlesMutationObserver?: MutationObserver;
+    private observedArticles?: Map<Element, Turn>;
+
     activeArticleId?: string;
 
     private chat?: Conversation;
-
-    // private conversationItems: ConversationItem[] = [];
 
     private root: ShadowRoot;
     private config: PaginatorConfig;
@@ -75,10 +78,8 @@ export class Paginator {
             paginator.initializeExistingChat(articlesContainer as Element);
         }
 
-        paginator.initializeNewChat();
+        await paginator.initializeNewChat();
 
-        paginator.createArticlesObserver(articlesContainer as Element);
-        paginator.createActiveArticleObserver(articlesContainer as Element);
         paginator.render();
 
         return paginator;
@@ -131,34 +132,42 @@ export class Paginator {
         this.createArticlesObserver(articlesContainer as Element);
         this.createActiveArticleObserver(articlesContainer as Element);
 
-        const conversationItems = buildConversationItems(domArticleElements);
+        const buildResult = buildConversationItems(domArticleElements);
+
+        this.observedArticles = buildResult.observableItems;
+        const conversationItems = buildResult.conversationItems;        
 
         const isFullyInitialized = !!conversationId || conversationItems[0].userMessage.turnNumber == 1;
 
         this.chat = {
             id: conversationId || window.location.href.split('/').at(-1)!,
-            conversationItems: conversationItems,            
+            conversationItems: conversationItems,
             isFullyInitialized: isFullyInitialized
         }
     }
 
     initializeNewChat() {
+        if(this.firstArticleMutationObserver){
+            this.firstArticleMutationObserver.disconnect();
+            this.firstArticleMutationObserver = undefined;
+        }
+        
         const mainElement = document.querySelector(this.MAIN_SELECTOR) as HTMLElement;
 
-        const onArticleAdd = (article: Element) => {
+        const onArticleAdd = async (article: Element) => {
             const conversationId = await waitForConversationUrl();
 
             const articleContainer = article.parentElement;
             this.initializeExistingChat(articleContainer as Element, conversationId);
 
-            mutationObserver.disconnect();
+            this.firstArticleMutationObserver?.disconnect();
         }
 
-        const mutationObserver = new MutationObserver(mutations => {
+        this.firstArticleMutationObserver = new MutationObserver(mutations => {
             for (const m of mutations) {
                 m.addedNodes.forEach(n => {
                     if (n.nodeType != 1)
-                        continue;
+                            return;                        
 
                     const el = n as Element;
 
@@ -176,10 +185,15 @@ export class Paginator {
             }
         });
 
-        mutationObserver.observe(mainElement, { childList: true, subtree: true });
+        this.firstArticleMutationObserver.observe(mainElement, { childList: true, subtree: true });
     }
 
     createArticlesObserver(articlesContainer: Element) {
+        if(this.articlesMutationObserver){
+            this.articlesMutationObserver.disconnect();
+            this.articlesMutationObserver = undefined;
+        }
+
         const onArticleAdd = (article: Element): void => {
             const turn = parseTurn(article);
             const role = getRole(article);
@@ -225,7 +239,7 @@ export class Paginator {
             conversationItems.splice(conversationItemIndex, 1);
         }
 
-        const mutationObserver = new MutationObserver(mutations => {
+        this.articlesMutationObserver = new MutationObserver(mutations => {
             for (const m of mutations) {
                 m.addedNodes.forEach(n => {
                     if (n.nodeType === 1) {
@@ -243,37 +257,50 @@ export class Paginator {
             this.render();
         });
 
-        mutationObserver.observe(articlesContainer, { childList: true, subtree: true });
+        this.articlesMutationObserver.observe(articlesContainer, { childList: true, subtree: true });
     }
 
     private createActiveArticleObserver(articlesContainer: Element) {
-        const getId = (el: HTMLElement): string?=> (el.getAttribute("data-turn-id") ?? el.id);
+        if(this.activeArticleObserver){
+            this.activeArticleObserver.disconnect();
+            this.activeArticleObserver = undefined;
+        }        
 
-
-        const observer = new IntersectionObserver(
-            (articleContainer) => {
-
-                const crossed = entries.filter(e => e.isIntersecting);
-                if (crossed.length === 0) return;
-
-                crossed.sort((a, b) => b.boundingClientRect.top - a.boundingClientRect.top);
-
-                this.activeArticleId = getId(crossed[0].target as HTMLElement);
-            },
-            {
-                articlesContainer,
-                threshold: 1,
-                rootMargin: "-75% 0px -25% 0px",
+        if(!this.observedArticles){
+            return;
+        }
+    
+        this.activeArticleObserver = new IntersectionObserver((entries) => {
+            let best: IntersectionObserverEntry | undefined;
+            
+            for (const e of entries) {
+                if (!e.isIntersecting) continue;
+                if (!best || e.intersectionRatio > best.intersectionRatio) best = e;
             }
-        );
+            
+            if (!best) return;
 
-        for (const a of articles) observer.observe(a);
+            const article = best.target as HTMLElement;
 
-        getActiveArticleId(): ArticleId | null {
-            if (activeId) return activeId;
-            if (articles.length === 0) return null;
+            const turn = this.observedArticles!.get(article);
+            const turnId = turn?.id ?? article.dataset.turnId
+            const turnNumber = article.dataset.testId;
+            if (!turnId || !turnNumber) return;
 
-            return getId(articles[articles.length - 1]);
+            if (!turn) this.observedArticles!.set(article, {id: turnId!, turnNumber: Number(turnNumber!) });
+
+            if (this.activeArticleId !== turnId) {
+                this.activeArticleId = turnId;
+                this.render();
+            }
+        }, {
+            root: null,
+            threshold: [0, 0.01, 0.1, 0.25, 0.5, 0.75, 1],
+            rootMargin: "0px 0px -25% 0px",
+        });
+
+        for(let turn of this.observedArticles){
+            this.activeArticleObserver.observe(turn[0]);
         }
     }
 
@@ -417,5 +444,18 @@ export class Paginator {
 
     public getActivePage(): number {
         return this.activePage;
+    }
+
+    dispose() {
+        this.activeIntersectionObserver?.disconnect();
+        this.activeIntersectionObserver = undefined;
+
+        this.articlesMutationObserver?.disconnect();
+        this.articlesMutationObserver = undefined;
+
+        this.newChatObserver?.disconnect();
+        this.newChatObserver = undefined;
+
+        this.observedArticles?.clear();
     }
 }
